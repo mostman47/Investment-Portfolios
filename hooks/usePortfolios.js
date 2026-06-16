@@ -37,16 +37,48 @@ function saveTokens(t) {
   try { localStorage.setItem(TOKEN_KEY, JSON.stringify(t)); } catch(e) {}
 }
 
+// Client-side Anthropic call (API key from env, baked at build time)
+async function callClaude(prompt) {
+  const apiKey = process.env.NEXT_PUBLIC_ANTHROPIC_API_KEY;
+  if (!apiKey) throw new Error('No ANTHROPIC API key. Add NEXT_PUBLIC_ANTHROPIC_API_KEY to .env.local');
+
+  const res = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'x-api-key': apiKey,
+      'anthropic-version': '2023-06-01',
+      'anthropic-dangerous-direct-browser-access': 'true',
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 4096,
+      messages: [{ role: 'user', content: prompt }],
+    }),
+  });
+
+  if (!res.ok) {
+    const err = await res.text();
+    throw new Error('Anthropic error: ' + err);
+  }
+
+  const data = await res.json();
+  return {
+    text: data.content?.[0]?.text || '',
+    inputTokens:  data.usage?.input_tokens  || 0,
+    outputTokens: data.usage?.output_tokens || 0,
+  };
+}
+
 export function usePortfolios() {
   const [state, setState] = useState({ activeId: null, portfolios: [] });
   const [tokens, setTokens] = useState({ calls: 0, inTokens: 0, outTokens: 0 });
-  const [toast, setToast] = useState(null); // { msg, type }
+  const [toast, setToast] = useState(null);
   const [modalOpen, setModalOpen] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [aiStatus, setAiStatus] = useState('');
   const toastTimer = useRef(null);
 
-  // Init from localStorage or defaults
   useEffect(() => {
     const saved = loadState();
     if (saved) {
@@ -73,49 +105,29 @@ export function usePortfolios() {
     });
   }, []);
 
-  const selectPortfolio = useCallback((id) => {
-    update(s => ({ ...s, activeId: id }));
-  }, [update]);
+  const selectPortfolio   = useCallback((id) => update(s => ({ ...s, activeId: id })), [update]);
+  const deletePortfolio   = useCallback((id) => update(s => {
+    const portfolios = s.portfolios.filter(p => p.id !== id);
+    return { ...s, portfolios, activeId: portfolios[0]?.id || null };
+  }), [update]);
+  const renamePortfolio   = useCallback((id, name) => update(s => ({
+    ...s, portfolios: s.portfolios.map(p => p.id === id ? { ...p, name: name.trim() || 'Unnamed' } : p)
+  })), [update]);
+  const updateStock       = useCallback((pid, idx, field, value) => update(s => ({
+    ...s, portfolios: s.portfolios.map(p =>
+      p.id !== pid ? p : { ...p, stocks: p.stocks.map((st, i) => i !== idx ? st : { ...st, [field]: value }) }
+    )
+  })), [update]);
+  const removeStock       = useCallback((pid, idx) => update(s => ({
+    ...s, portfolios: s.portfolios.map(p =>
+      p.id !== pid ? p : { ...p, stocks: p.stocks.filter((_, i) => i !== idx) }
+    )
+  })), [update]);
 
   const createPortfolio = useCallback((name, color) => {
     const np = { id: uid(), name, color, lastRefresh: null, dataSource: null, stocks: [] };
     update(s => ({ ...s, portfolios: [...s.portfolios, np], activeId: np.id }));
     setModalOpen(false);
-  }, [update]);
-
-  const deletePortfolio = useCallback((id) => {
-    update(s => {
-      const portfolios = s.portfolios.filter(p => p.id !== id);
-      return { ...s, portfolios, activeId: portfolios[0]?.id || null };
-    });
-  }, [update]);
-
-  const renamePortfolio = useCallback((id, name) => {
-    update(s => ({
-      ...s,
-      portfolios: s.portfolios.map(p => p.id === id ? { ...p, name: name.trim() || 'Unnamed' } : p)
-    }));
-  }, [update]);
-
-  const updateStock = useCallback((pid, idx, field, value) => {
-    update(s => ({
-      ...s,
-      portfolios: s.portfolios.map(p =>
-        p.id !== pid ? p : {
-          ...p,
-          stocks: p.stocks.map((st, i) => i !== idx ? st : { ...st, [field]: value })
-        }
-      )
-    }));
-  }, [update]);
-
-  const removeStock = useCallback((pid, idx) => {
-    update(s => ({
-      ...s,
-      portfolios: s.portfolios.map(p =>
-        p.id !== pid ? p : { ...p, stocks: p.stocks.filter((_, i) => i !== idx) }
-      )
-    }));
   }, [update]);
 
   const addStock = useCallback((pid, { ticker, company, sector, buy_price, alloc_pct, risk, notes }) => {
@@ -132,8 +144,7 @@ export function usePortfolios() {
       notes: notes || def.notes || '',
     };
     update(s => ({
-      ...s,
-      portfolios: s.portfolios.map(p =>
+      ...s, portfolios: s.portfolios.map(p =>
         p.id !== pid ? p : { ...p, stocks: [...p.stocks, stock] }
       )
     }));
@@ -142,8 +153,7 @@ export function usePortfolios() {
 
   const resetTokens = useCallback(() => {
     const t = { calls: 0, inTokens: 0, outTokens: 0 };
-    setTokens(t);
-    saveTokens(t);
+    setTokens(t); saveTokens(t);
     showToast('AI usage reset');
   }, [showToast]);
 
@@ -158,39 +168,50 @@ export function usePortfolios() {
 
     try {
       const tickers = active.stocks.map(s => s.ticker);
-      const res = await fetch('/api/refresh', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ tickers }),
-      });
+      const tickerList = tickers.join(', ');
 
-      if (!res.ok) {
-        const err = await res.json();
-        throw new Error(err.error || 'API error');
-      }
+      // Try Yahoo Finance from client
+      let yahooRaw = null;
+      setAiStatus('Calling Yahoo Finance...');
+      try {
+        const yRes = await fetch(
+          `https://query2.finance.yahoo.com/v7/finance/quote?symbols=${encodeURIComponent(tickers.join(','))}`,
+          { signal: AbortSignal.timeout(6000) }
+        );
+        const text = await yRes.text();
+        if (text.includes('regularMarketPrice')) yahooRaw = text;
+      } catch(e) {}
 
-      const { text, dataSource, inputTokens, outputTokens } = await res.json();
+      const dataSource = yahooRaw ? 'yahoo+ai' : 'ai';
+      setAiStatus('Asking Claude...');
 
-      // Update tokens
+      const prompt = yahooRaw
+        ? `You are a financial data parser. Parse this Yahoo Finance JSON for stocks: ${tickerList}.
+
+Return ONLY a valid JSON array (no markdown, no explanation):
+[{"symbol":"TICKER","current_price":<number>,"day_change_pct":<number>,"pe_ratio":<number|null>,"risk_level":"<low|medium|high|vhigh>","buy_target":<number>,"sell_target":<number>}]
+
+Yahoo Finance data:
+${yahooRaw.slice(0, 8000)}`
+        : `You are a financial analyst. Best estimates for these stocks as of today: ${tickerList}.
+
+Return ONLY a valid JSON array (no markdown, no explanation):
+[{"symbol":"TICKER","current_price":<number>,"day_change_pct":<number>,"pe_ratio":<number|null>,"risk_level":"<low|medium|high|vhigh>","buy_target":<number>,"sell_target":<number>}]`;
+
+      const { text, inputTokens, outputTokens } = await callClaude(prompt);
+
       setTokens(prev => {
-        const next = {
-          calls: prev.calls + 1,
-          inTokens: prev.inTokens + (inputTokens || 0),
-          outTokens: prev.outTokens + (outputTokens || 0),
-        };
-        saveTokens(next);
-        return next;
+        const next = { calls: prev.calls + 1, inTokens: prev.inTokens + inputTokens, outTokens: prev.outTokens + outputTokens };
+        saveTokens(next); return next;
       });
 
-      // Parse quotes
       const match = text.match(/\[[\s\S]*\]/);
-      if (!match) throw new Error('No JSON in response');
+      if (!match) throw new Error('No JSON in AI response');
       const quotes = JSON.parse(match[0]);
 
       let updated = 0;
       update(s => ({
-        ...s,
-        portfolios: s.portfolios.map(p => {
+        ...s, portfolios: s.portfolios.map(p => {
           if (p.id !== s.activeId) return p;
           const stocks = p.stocks.map(st => {
             const q = quotes.find(q => q.symbol?.toUpperCase() === st.ticker.toUpperCase());
@@ -201,9 +222,9 @@ export function usePortfolios() {
               current_price:  q.current_price  != null ? +q.current_price  : st.current_price,
               day_change_pct: q.day_change_pct != null ? +q.day_change_pct : st.day_change_pct,
               pe_ratio:       q.pe_ratio       != null ? +q.pe_ratio       : st.pe_ratio,
-              risk:           q.risk_level                                 || st.risk,
-              buy_target:     q.buy_target     != null ? +q.buy_target     : st.buy_target,
-              sell_target:    q.sell_target    != null ? +q.sell_target    : st.sell_target,
+              risk:           q.risk_level || st.risk,
+              buy_target:     q.buy_target  != null ? +q.buy_target  : st.buy_target,
+              sell_target:    q.sell_target != null ? +q.sell_target : st.sell_target,
             };
           });
           return { ...p, stocks, lastRefresh: new Date().toISOString(), dataSource };
@@ -211,7 +232,7 @@ export function usePortfolios() {
       }));
 
       const src = dataSource === 'yahoo+ai' ? 'Yahoo Finance + AI' : 'AI estimate';
-      showToast(`✓ Updated ${updated} stock${updated !== 1 ? 's' : ''} via ${src}`, 'ai');
+      showToast(`✓ Updated ${updated} stocks via ${src}`, 'ai');
       setAiStatus(`Done · ${src}`);
     } catch(e) {
       showToast('Error: ' + e.message, 'error');
@@ -221,10 +242,9 @@ export function usePortfolios() {
     }
   }, [state, refreshing, update, showToast]);
 
-  const activePortfolio = state.portfolios.find(p => p.id === state.activeId) || null;
-
   return {
-    state, activePortfolio,
+    state,
+    activePortfolio: state.portfolios.find(p => p.id === state.activeId) || null,
     tokens, resetTokens,
     toast, showToast,
     modalOpen, setModalOpen,
