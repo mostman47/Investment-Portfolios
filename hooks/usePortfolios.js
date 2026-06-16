@@ -80,14 +80,10 @@ export function usePortfolios() {
   const toastTimer = useRef(null);
 
   useEffect(() => {
-    const saved = loadState();
-    if (saved) {
-      setState(saved);
-    } else {
-      const initial = { activeId: INITIAL_PORTFOLIOS[0].id, portfolios: INITIAL_PORTFOLIOS };
-      setState(initial);
-      saveState(initial);
-    }
+    // Always clear localStorage on page load so fresh PRICE_UPDATES from lib/data.js are used
+    localStorage.removeItem(STORAGE_KEY);
+    const initial = { activeId: INITIAL_PORTFOLIOS[0].id, portfolios: INITIAL_PORTFOLIOS };
+    setState(initial);
     setTokens(loadTokens());
   }, []);
 
