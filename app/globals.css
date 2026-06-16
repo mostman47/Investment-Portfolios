@@ -1,0 +1,39 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root { color-scheme: light; }
+
+/* Sector badges */
+.b-fertilizer  { @apply bg-green-100 text-green-800; }
+.b-food        { @apply bg-yellow-100 text-yellow-800; }
+.b-vn          { @apply bg-blue-100 text-blue-800; }
+.b-other       { @apply bg-slate-100 text-slate-600; }
+.b-tech        { @apply bg-violet-100 text-violet-800; }
+.b-semiconductor { @apply bg-blue-100 text-blue-900; }
+.b-energy      { @apply bg-orange-50 text-orange-800; }
+.b-quantum     { @apply bg-indigo-50 text-indigo-700; }
+.b-etf         { @apply bg-emerald-50 text-emerald-800; }
+.b-auto        { @apply bg-rose-50 text-rose-800; }
+.b-finance     { @apply bg-yellow-50 text-yellow-900; }
+.b-pharma      { @apply bg-green-50 text-green-800; }
+.b-conglomerate { @apply bg-fuchsia-50 text-fuchsia-800; }
+.b-logistics   { @apply bg-blue-50 text-blue-800; }
+.b-aerospace   { @apply bg-green-50 text-green-800; }
+.b-staples     { @apply bg-orange-50 text-orange-900; }
+.b-drone       { @apply bg-amber-50 text-amber-900; }
+
+/* Animations */
+@keyframes spin { to { transform: rotate(360deg); } }
+.spinning { animation: spin 0.75s linear infinite; }
+
+@keyframes pulse-dot { 0%,100% { opacity:1; transform:scale(1); } 50% { opacity:0.4; transform:scale(0.8); } }
+.ai-pulse { animation: pulse-dot 1s ease-in-out infinite; }
+
+@keyframes ai-flash { 0% { background:#ede9fe; } 100% { background:transparent; } }
+.ai-updated { animation: ai-flash 2s ease-out; }
+
+/* Scrollbar */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 99px; }
